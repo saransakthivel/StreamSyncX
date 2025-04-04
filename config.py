@@ -56,8 +56,8 @@ tech_urls = [
 
 
 it_urls = [
-    # "http://127.0.0.1:8084/services/user/values.xml?var=EB Incomer.API",
-    # "http://127.0.0.1:8084/services/user/values.xml?var=60kVA%20UPS-2.API"
+    "http://127.0.0.1:8084/services/user/values.xml?var=EB Incomer.API",
+    "http://127.0.0.1:8084/services/user/values.xml?var=60kVA%20UPS-2.API"
 ]
 
 cth_urls = [

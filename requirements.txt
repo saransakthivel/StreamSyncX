@@ -13,5 +13,6 @@ tzdata==2025.1
 tzlocal==5.2
 urllib3==2.3.0
 xmltodict==0.14.2
+psutil
 # Windows-only package (ignored in Docker)
 pywin32==308; sys_platform == "win32"

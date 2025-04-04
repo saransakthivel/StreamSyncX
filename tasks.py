@@ -1,5 +1,6 @@
 
 import os
+import psutil
 import time
 import logging
 import win32serviceutil
@@ -18,7 +19,8 @@ import config
 
 #logging-setup --> start
 
-logging.basicConfig(level=logging.INFO)
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.INFO)
 
 log_dir = "C:\\StreamSyncX\\logs"
 log_file = os.path.join(log_dir, "tasks_debug.log")
@@ -64,7 +66,32 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
     def SvcStop(self):
         logging.info("Service is shutting down...")
         self.running = False
-        self.scheduler.shutdown(wait=False)
+
+        try:
+            self.scheduler.shutdown(wait=False)
+        except Exception as e:
+            logging.error(f"Error Shutting down service: {e}")
+
+        try:
+            parent = psutil.Process(os.getpid())
+            logging.info(f"Terminating Process Parent:{os.getpid()}")
+
+            children = parent.children(recursive=True)
+            logging.info(f"Found {len(children)} child process(es).")
+
+            if not children:
+                logging.info("No child process found.")
+            else:
+                for child in children:
+                    try:
+                        logging.info(f"Terminating child process PID {child.pid}")
+                        child.terminate()
+                        child.wait(timeout=5)
+                    except:
+                        logging.error(f"Error terminating child process PID {child.pid}: {e}")
+        except Exception as e:
+            logging.error(f"Error finding/terminating child processes: {e}")
+
         win32event.SetEvent(self.stop_event)
         logging.info("Service stopped successfully.")
 
@@ -102,7 +129,8 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
             date_str = now_ist.date().strftime("%Y-%m-%d")
             time_str = now_ist.time().strftime("%H:%M:%S")
 
-            for url in config.tech_urls:
+            for url in config.urls:
+                # logging.info(f'Loaded config.cth_urls: {config.cth_urls}')
                 try:
                     response = requests.get(url)
                     if response.status_code == 200:
