@@ -38,9 +38,13 @@ logging.getLogger().addHandler(log_handler)
 
 logging.info("StreamSyncXService PSG Data fetch and Delete Tasks Service: Initialization started.")
 class StreamSyncXService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "PSGStreamSyncXService"
+    _svc_name_ = "PsgStreamSyncXService"
     _svc_display_name_ = "PSG EDS Data Fetching"
     _svc_description_ = "A Windows Service that fetches XML data and stores it in MongoDB using Dramatiq and Redis."
+
+    _MONGO_URL = "mongodb+srv://smartgrid:yQPJi5bLVrWLsd6s@psgsynccluster.yuuy7.mongodb.net/"
+    _DB_NAME = "test_db"
+    _COLLECTION_NAME = "test_collection"
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -50,9 +54,9 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
         self.broker = RedisBroker(host="localhost", port=6379)
         dramatiq.set_broker(self.broker)
 
-        self.client = MongoClient("mongodb://smartgrid:yQPJi5bLVrWLsd6s@federateddatabaseinstance0-yuuy7.a.query.mongodb.net/?ssl=true&authSource=admin&appName=FederatedDatabaseInstance0")
-        self.db = self.client["VirtualDatabase0"]
-        self.collection = self.db["PSGData"]
+        self.client = MongoClient(self.__class__._MONGO_URL)
+        self.db = self.client[self.__class__._DB_NAME]
+        self.collection = self.db[self.__class__._COLLECTION_NAME]
 
         self.scheduler = BackgroundScheduler()
         logging.info("Job Scheduler Started Successfully.")
@@ -87,9 +91,9 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
     @staticmethod
     @dramatiq.actor
     def fetch_data():
-        client = MongoClient("mongodb://smartgrid:yQPJi5bLVrWLsd6s@federateddatabaseinstance0-yuuy7.a.query.mongodb.net/?ssl=true&authSource=admin&appName=FederatedDatabaseInstance0")
-        db = client["VirtualDatabase0"]
-        collection = db["PSGData"]
+        client = MongoClient(__class__._MONGO_URL)
+        db = client[__class__._DB_NAME]
+        collection = db[__class__._COLLECTION_NAME]
 
         try:
 
@@ -98,7 +102,7 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
             date_str = now_ist.date().strftime("%Y-%m-%d")
             time_str = now_ist.time().strftime("%H:%M:%S")
 
-            for url in config.urls:
+            for url in config.tech_urls:
                 try:
                     response = requests.get(url)
                     if response.status_code == 200:
@@ -134,9 +138,9 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
     @staticmethod
     @dramatiq.actor
     def delete_old_data():
-        client = MongoClient("mongodb://smartgrid:yQPJi5bLVrWLsd6s@federateddatabaseinstance0-yuuy7.a.query.mongodb.net/?ssl=true&authSource=admin&appName=FederatedDatabaseInstance0")
-        db = client["VirtualDatabase0"]
-        collection = db["PSGData"]
+        client = MongoClient(__class__._MONGO_URL)
+        db = client[__class__._DB_NAME]
+        collection = db[__class__._COLLECTION_NAME]
         try:
             now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
             expiration_time = now_ist - timedelta(minutes=5)
