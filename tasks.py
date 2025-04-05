@@ -1,9 +1,9 @@
-
 import os
 import psutil
 import time
 import logging
 import win32serviceutil
+import win32service
 import win32event
 from logging.handlers import RotatingFileHandler
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -14,8 +14,10 @@ from pymongo import MongoClient
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import redis
 import pytz
 import config
+from functools import partial
 
 #logging-setup --> start
 
@@ -38,15 +40,25 @@ logging.getLogger().addHandler(log_handler)
 
 #logginf setup --> end
 
+def wait_for_worker():
+        retries = 5
+        for i in range(retries):
+            try:
+                r = redis.Redis(host="localhost", port=6379)
+                if r.ping():
+                    logging.info("Redis and Dramatiq broker are available.")
+                    return True
+            except Exception as e:
+                logging.warning(f"Redis/Dramatiq not ready (attempt {i+1}/{retries}): {e}")
+                time.sleep(5)
+        logging.error("Dramatiq broker is not responding. Scheduler will not start.")
+        return False
+
 logging.info("StreamSyncXService PSG Data fetch and Delete Tasks Service: Initialization started.")
 class StreamSyncXService(win32serviceutil.ServiceFramework):
     _svc_name_ = "PsgStreamSyncXService"
     _svc_display_name_ = "PSG EDS Data Fetching"
     _svc_description_ = "A Windows Service that fetches XML data and stores it in MongoDB using Dramatiq and Redis."
-
-    _MONGO_URL = "mongodb+srv://smartgrid:yQPJi5bLVrWLsd6s@psgsynccluster.yuuy7.mongodb.net/"
-    _DB_NAME = "test_db"
-    _COLLECTION_NAME = "test_collection"
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -56,9 +68,8 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
         self.broker = RedisBroker(host="localhost", port=6379)
         dramatiq.set_broker(self.broker)
 
-        self.client = MongoClient(self.__class__._MONGO_URL)
-        self.db = self.client[self.__class__._DB_NAME]
-        self.collection = self.db[self.__class__._COLLECTION_NAME]
+        self.client = MongoClient("mongodb+srv://smartgrid:yQPJi5bLVrWLsd6s@psgsynccluster.yuuy7.mongodb.net/")
+        self.db = self.client["test_db"]
 
         self.scheduler = BackgroundScheduler()
         logging.info("Job Scheduler Started Successfully.")
@@ -97,14 +108,30 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
 
     def SvcDoRun(self):
         logging.info("Service is now running.")
+        self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+
+        os.chdir("C:\\StreamSyncX")
+        os.environ["MY_ENV_VAR"] = "value"
+
+        if not wait_for_worker():
+            logging.error("Worker check failed. Aborting scheduler startup.")
+            return
+        
+        time.sleep(5)
+
         try:
-            if not self.scheduler.running:
-                self.scheduler.add_job(self.fetch_data.send, "interval", seconds=10)
-                self.scheduler.add_job(self.delete_old_data.send, "interval", seconds=60)
+                self.scheduler.add_job(partial(self.fetch_data.send, "CasData", config.cas_urls), "interval", seconds=20, id="fetch_CasData")
+                logging.info("fetch_data for CasData scheduled.")
+                self.scheduler.add_job(partial(self.delete_data.send, "CasData"), "interval", seconds=60, id="delete_CasData")
+                logging.info("delete_data for CasData scheduled.")
+
+                self.scheduler.add_job(partial(self.fetch_data.send, "test_collection", config.tech_urls), "interval", seconds=20, id="fetch_TechData")
+                logging.info("fetch_data for TechData scheduled.")
+                self.scheduler.add_job(partial(self.delete_data.send, "test_collection"), "interval", seconds=60, id="delete_TechData")
+                logging.info("delete_data for TechData scheduled.")
+
                 self.scheduler.start()
                 logging.info("Scheduler started.")
-            else:
-                logging.info("Scheduler is already running.")
         except Exception as e:
             logging.error(f"Scheduler startup failed: {e}")
         
@@ -117,10 +144,10 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
 
     @staticmethod
     @dramatiq.actor
-    def fetch_data():
-        client = MongoClient(__class__._MONGO_URL)
-        db = client[__class__._DB_NAME]
-        collection = db[__class__._COLLECTION_NAME]
+    def fetch_data(collection_name:str, url_list:list):
+        client = MongoClient("mongodb+srv://smartgrid:yQPJi5bLVrWLsd6s@psgsynccluster.yuuy7.mongodb.net/")
+        db = client["test_db"]
+        collection = db[collection_name]
 
         try:
 
@@ -129,11 +156,11 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
             date_str = now_ist.date().strftime("%Y-%m-%d")
             time_str = now_ist.time().strftime("%H:%M:%S")
 
-            for url in config.urls:
-                # logging.info(f'Loaded config.cth_urls: {config.cth_urls}')
+            for url in url_list:
                 try:
                     response = requests.get(url)
                     if response.status_code == 200:
+                        logging.info(f"Successfully fetched url: {url}")
                         root = ET.fromstring(response.content)
                         variable_elements = root.findall(".//variable")
 
@@ -155,7 +182,7 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
 
                         if data_records:
                             collection.insert_many(data_records)
-                            logging.info(f"Successfully stored {len(data_records)} records from {url}.")
+                            logging.info(f"Successfully stored {len(data_records)} in {collection_name} records from {url}")
                     else:
                         logging.error(f"Data fetch failed from {url} - Status code: {response.status_code}")
                 except Exception as e:
@@ -165,18 +192,19 @@ class StreamSyncXService(win32serviceutil.ServiceFramework):
 
     @staticmethod
     @dramatiq.actor
-    def delete_old_data():
-        client = MongoClient(__class__._MONGO_URL)
-        db = client[__class__._DB_NAME]
-        collection = db[__class__._COLLECTION_NAME]
+    def delete_data(collection_name:str):
+        client = MongoClient("mongodb+srv://smartgrid:yQPJi5bLVrWLsd6s@psgsynccluster.yuuy7.mongodb.net/")
+        db = client["test_db"]
+        collection = db[collection_name]
         try:
             now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
             expiration_time = now_ist - timedelta(minutes=5)
 
             result = collection.delete_many({"datetime_obj" : {"$lte" : expiration_time}})
-            logging.info(f"Deleted {result.deleted_count} old records from MongoDB.")
+            logging.info(f"Deleted {result.deleted_count} old records from {collection_name}.")
         except Exception as e:
             logging.error(f"Error while deleting expired data: {e}")
 
+ 
 if __name__ =="__main__":
     win32serviceutil.HandleCommandLine(StreamSyncXService)

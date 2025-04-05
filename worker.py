@@ -64,8 +64,8 @@ class TaskService(win32serviceutil.ServiceFramework):
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         
         os.chdir("C:\\StreamSyncX")
-        
         os.environ["MY_ENV_VAR"] = "value"
+        
         try:
             logging.info("Starting Dramatiq worker process...")
             self.process = Popen(
